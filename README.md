@@ -1,2 +1,2 @@
 # cloud-devops-engineer-nd
-Contains all the projects
+Contains all the UDACITY Cloud DevOps Engineer Nanodegree projects
