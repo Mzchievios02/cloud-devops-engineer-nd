@@ -1,0 +1,26 @@
+[
+	{
+		"ParameterKey": "EnvironmentName",
+		"ParameterValue": "UdacityProject2"
+	},
+	{
+		"ParameterKey": "AppInstanceType",
+		"ParameterValue": "t3.medium"
+	},
+	{
+		"ParameterKey": "AppVolumeSize",
+		"ParameterValue": "10"
+	},
+	{
+		"ParameterKey": "UbuntuAmiId",
+		"ParameterValue": "/aws/service/canonical/ubuntu/server/18.04/stable/current/amd64/hvm/ebs-gp2/ami-id"
+	},
+	{
+		"ParameterKey": "BastionInstanceType",
+		"ParameterValue": "t2.micro"
+	},
+	{
+		"ParameterKey": "BastionVolume",
+		"ParameterValue": "10"
+	}
+]

@@ -1,0 +1,230 @@
+Parameters:
+    EnvironmentName:
+      Description: An environment name that will be prefixed to resource names
+      Type: String
+    AppInstanceType:
+      Description: WebServer EC2 instance type
+      Type: String
+    AppVolumeSize: 
+      Description: EBS Volume size for web server
+      Type: Number
+    UbuntuAmiId:
+      Description: Latest Ubuntu 18 AMI ID from parameter store
+      Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    BastionInstanceType:
+      Description: WebServer EC2 instance type
+      Type: String
+    BastionVolume:
+      Description: EBS Volume size for bastion host
+      Type: Number
+
+Resources:
+  LBSecGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow http to load balancer
+      VpcId:
+        Fn::ImportValue:
+          !Sub "${EnvironmentName}-VPCID"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+  WebServerSecGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow http to users
+      VpcId:
+        Fn::ImportValue:
+          !Sub "${EnvironmentName}-VPCID"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref LBSecGroup
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          SourceSecurityGroupId: !Ref BastionHostSecGroup
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 0
+          ToPort: 65535
+          CidrIp: 0.0.0.0/0
+  WebAppLaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      ImageId: !Ref UbuntuAmiId
+      InstanceType: !Ref AppInstanceType
+      IamInstanceProfile: !Ref ProfileWithRolesForOurApp
+      SecurityGroups:
+        - Ref: WebServerSecGroup
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          sudo apt-get update -y
+          sudo apt-get install apache2 -y
+          sudo systemctl start apache2.service 
+          echo "it works! Udagram, Udacity" > /var/www/html/index.html
+      BlockDeviceMappings: 
+        - DeviceName: "/dev/sdm"
+          Ebs: 
+            VolumeType: "gp2"
+            DeleteOnTermination: "true"
+            VolumeSize: !Ref AppVolumeSize
+  WebAppGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+      - Fn::ImportValue: 
+          !Sub "${EnvironmentName}-PRIV-NETS"
+      LaunchConfigurationName:
+        Ref: WebAppLaunchConfig
+      MinSize: '1'
+      MaxSize: '5'
+      DesiredCapacity: '1'
+      TargetGroupARNs:
+      - Ref: WebAppTargetGroup
+# Load balancer for app
+  WebAppLB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Subnets:
+      - Fn::ImportValue: !Sub "${EnvironmentName}-PUB1-SN"
+      - Fn::ImportValue: !Sub "${EnvironmentName}-PUB2-SN"
+      SecurityGroups:
+      - Ref: LBSecGroup
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+      - Type: forward
+        TargetGroupArn:
+          Ref: WebAppTargetGroup
+      LoadBalancerArn:
+        Ref: WebAppLB
+      Port: '80'
+      Protocol: HTTP
+  ALBListenerRule:
+      Type: AWS::ElasticLoadBalancingV2::ListenerRule
+      Properties:
+        Actions:
+        - Type: forward
+          TargetGroupArn: !Ref 'WebAppTargetGroup'
+        Conditions:
+        - Field: path-pattern
+          Values: [/]
+        ListenerArn: !Ref 'Listener'
+        Priority: 1
+  WebAppTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 10
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 8
+      HealthyThresholdCount: 2
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 5
+      VpcId: 
+        Fn::ImportValue:
+          Fn::Sub: "${EnvironmentName}-VPCID"
+# S3 bucket
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Description: Bucket to store the apps archive
+    DeletionPolicy: Retain
+# Instance Profile 
+  ProfileWithRolesForOurApp:
+    Type: AWS::IAM::InstanceProfile
+    Properties: 
+      InstanceProfileName: ec2-instance-profile-for-app
+      Roles:
+        - Ref: UdacityS3ReadOnlyEC2Role
+# IAM Role for Instance Profile
+  UdacityS3ReadOnlyEC2Role: 
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: Udacity-S3-Read-Only
+      AssumeRolePolicyDocument: 
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'    
+# IAM policy for S3 read access
+  UdacityInstanceS3Policy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: S3ReadOnlyPolicy
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Action:
+              - s3:GetObject
+            Resource:
+              - !GetAtt S3Bucket.Arn
+              - !Sub '${S3Bucket.Arn}/*'        
+      Roles:
+        -
+          !Ref UdacityS3ReadOnlyEC2Role
+# Bastion Host
+  BastionHostSecGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow SSH to Bastion host from one trusted IP
+      VpcId:
+        Fn::ImportValue:
+          !Sub "${EnvironmentName}-VPCID"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 75.158.103.38/32
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 0
+          ToPort: 65535
+          CidrIp: 0.0.0.0/0
+  BastionHostLaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      ImageId: ami-0cff7528ff583bf9a
+      InstanceType: !Ref BastionInstanceType
+      KeyName: pro2
+      SecurityGroups:
+        - Ref: BastionHostSecGroup
+      BlockDeviceMappings: 
+        - DeviceName: "/dev/sdm"
+          Ebs: 
+            VolumeType: "gp2"
+            DeleteOnTermination: "true"
+            VolumeSize: !Ref BastionVolume
+  BastionGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+      - Fn::ImportValue: 
+          !Sub "${EnvironmentName}-PUB-NETS"
+      LaunchConfigurationName:
+        Ref: BastionHostLaunchConfig
+      MinSize: '1'
+      MaxSize: '1'
+      DesiredCapacity: '1'
+
+Outputs: 
+  LBDNSName:
+    Description: Load balancer DNS Name
+    Value: !Sub http://${WebAppLB.DNSName}
